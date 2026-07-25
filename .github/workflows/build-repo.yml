@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build-and-publish:
@@ -51,7 +53,7 @@ jobs:
             curl -sL -O "$url"
           done
 
-      - name: Generate Signed packages.adb with Custom URL Prefix
+      - name: Generate Signed packages.adb
         run: |
           docker run --rm \
             -v "$(pwd):/work" \
@@ -59,11 +61,9 @@ jobs:
             alpine:latest sh -c "
               apk add --no-cache apk-tools && \
               cd downloaded_apks && \
-              # 使用 -s / --rewrite-url 参数（或拼接绝对路径前缀）
-              # 强制把下载基准路径指向 release 的根目录
               apk mkndx --allow-untrusted \
                 --sign ../private-key.pem \
-                --output ../packages.adb \
+                --output packages.adb \
                 *.apk
             "
 
@@ -72,39 +72,10 @@ jobs:
         run: |
           rm -f private-key.pem
 
-      - name: Prepare Release Assets
-        run: |
-          # 创建统一存放待上传文件的目录
-          mkdir -p upload_assets
-          
-          # 将所有 downloaded_apks 下的 apk 文件和 packages.adb 复制出来（平铺）
-          cp downloaded_apks/*.apk upload_assets/ 2>/dev/null || true
-          cp packages.adb upload_assets/ 2>/dev/null || true
-          
-
-      - name: Commit and Push packages.adb to repository root
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          git add packages.adb
-          
-          if git diff --staged --quiet; then
-            echo "packages.adb 没有变化，跳过 commit"
-          else
-            git commit -m "chore: update packages.adb [skip ci]"
-            git push
-          fi
-
-      - name: Publish/Overwrite APKs to GitHub Releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG_NAME="latest"
-          
-          if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release create "$TAG_NAME" --title "Latest Passwall APKs" --notes "自动更新的 Passwall APK 文件及软件包索引"
-          fi
-
-          # 注意：末尾加上 /* 确保传给 gh 的是文件列表，而不是文件夹目录
-          gh release upload "$TAG_NAME" upload_assets/* --clobber
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./downloaded_apks
+          keep_files: false
+          force_orphan: true
