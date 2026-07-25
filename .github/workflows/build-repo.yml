@@ -1,12 +1,12 @@
 name: Build, Sign and Publish OpenWrt APK Repo
 
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * *' # 每天定时运行检查更新
+    - cron: '0 0 * * *'
 
 permissions:
-  contents: write # 允许 Action 写回仓库内容和发布 Releases
+  contents: write
 
 jobs:
   build-and-publish:
@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y apk-tools curl jq
+          sudo apt-get install -y curl jq
 
       - name: Prepare Signing Keys
         env:
@@ -30,8 +30,6 @@ jobs:
             echo "Error: APK_PRIVATE_KEY is not set in Repository Secrets!"
             exit 1
           fi
-          
-          # 将 Secret 中的私钥写入临时文件
           echo "$PRIVATE_KEY_DATA" > private-key.pem
           chmod 600 private-key.pem
 
@@ -40,7 +38,6 @@ jobs:
           mkdir -p downloaded_apks
           cd downloaded_apks
           
-          # 获取 Openwrt-Passwall 最新 Release 中的所有 .apk 文件下载地址
           APK_URLS=$(curl -s https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest \
             | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url')
           
@@ -54,16 +51,20 @@ jobs:
             curl -sL -O "$url"
           done
 
-      - name: Generate Signed packages.adb Index
+      - name: Generate Signed packages.adb Index via Alpine Container
         run: |
-          cd downloaded_apks
-          # 使用根目录中的 private-key.pem 签名生成 packages.adb 到仓库根目录
-          apk mkndx --sign ../private-key.pem --output ../packages.adb *.apk
+          docker run --rm \
+            -v "$(pwd):/work" \
+            -w /work \
+            alpine:latest sh -c "
+              apk add --no-cache apk-tools && \
+              cd downloaded_apks && \
+              apk mkndx --sign ../private-key.pem --output ../packages.adb *.apk
+            "
 
       - name: Clean up sensitive key
         if: always()
         run: |
-          # 擦除敏感私钥
           rm -f private-key.pem
 
       - name: Commit and Push packages.adb to repository root
@@ -73,7 +74,6 @@ jobs:
           
           git add packages.adb
           
-          # 检查 packages.adb 是否有更新，如果有更新则 Commit 并 Push
           if git diff --staged --quiet; then
             echo "packages.adb 没有变化，跳过 commit"
           else
@@ -87,12 +87,10 @@ jobs:
         run: |
           TAG_NAME="latest"
           
-          # 如果不存在 latest 标签的 Release，则自动新建；如果已存在则继续处理
           if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
             echo "创建新的 Release: $TAG_NAME"
             gh release create "$TAG_NAME" --title "Latest Passwall APKs" --notes "自动更新的 Passwall APK 文件及软件包索引"
           fi
 
-          # 使用 --clobber 参数强制覆盖已有同名文件
           echo "正在上传/覆盖 APK 文件到 Release ($TAG_NAME)..."
           gh release upload "$TAG_NAME" downloaded_apks/*.apk --clobber
