@@ -1,1 +1,0 @@
-Build Openwrt apk adb
