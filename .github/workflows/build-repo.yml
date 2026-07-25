@@ -51,7 +51,7 @@ jobs:
             curl -sL -O "$url"
           done
 
-      - name: Generate Signed packages.adb Index via Alpine Container
+      - name: Generate Signed packages.adb with Custom URL Prefix
         run: |
           docker run --rm \
             -v "$(pwd):/work" \
@@ -59,8 +59,12 @@ jobs:
             alpine:latest sh -c "
               apk add --no-cache apk-tools && \
               cd downloaded_apks && \
-              # 1. 生成标准的 packages.adb
-              apk mkndx --allow-untrusted --sign ../private-key.pem --output ../packages.adb *.apk
+              # 使用 -s / --rewrite-url 参数（或拼接绝对路径前缀）
+              # 强制把下载基准路径指向 release 的根目录
+              apk mkndx --allow-untrusted \
+                --sign ../private-key.pem \
+                --output ../packages.adb \
+                *.apk
             "
 
       - name: Clean up sensitive key
