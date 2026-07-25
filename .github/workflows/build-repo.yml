@@ -35,11 +35,12 @@ jobs:
           echo "$PRIVATE_KEY_DATA" > private-key.pem
           chmod 600 private-key.pem
 
-      - name: Download latest Passwall APKs
+      - name: Download latest Passwall APKs and Sanitize Filenames
         run: |
           mkdir -p downloaded_apks
           cd downloaded_apks
           
+          # 1. 获取最新 release 中的 apk 下载链接
           APK_URLS=$(curl -s https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest \
             | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url')
           
@@ -48,11 +49,23 @@ jobs:
             exit 1
           fi
 
+          # 2. 下载所有 apk
           for url in $APK_URLS; do
             echo "Downloading $url..."
             curl -sL -O "$url"
           done
 
+          # 3. 关键修正：清理文件名中的前缀和异常字符 (例如把 25.12+_luci-... 重命名为 luci-...)
+          for file in *luci-*.apk; do
+            if [ -f "$file" ]; then
+              # 提取从 "luci-" 开始的标准包名
+              clean_name=$(echo "$file" | sed -E 's/.*(luci-.*\.apk)$/\1/')
+              if [ "$file" != "$clean_name" ]; then
+                echo "Renaming '$file' -> '$clean_name'"
+                mv "$file" "$clean_name"
+              fi
+            fi
+          done
       - name: Generate Signed packages.adb
         run: |
           docker run --rm \
