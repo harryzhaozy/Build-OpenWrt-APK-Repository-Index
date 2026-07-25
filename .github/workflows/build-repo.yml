@@ -59,7 +59,7 @@ jobs:
             alpine:latest sh -c "
               apk add --no-cache apk-tools && \
               cd downloaded_apks && \
-              apk mkndx --sign ../private-key.pem --output ../packages.adb *.apk
+              apk mkndx --allow-untrusted --sign ../private-key.pem --output ../packages.adb *.apk
             "
 
       - name: Clean up sensitive key
