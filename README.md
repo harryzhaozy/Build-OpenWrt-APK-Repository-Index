@@ -8,3 +8,5 @@ curl -sL "https://raw.githubusercontent.com/harryzhaozy/Build-OpenWrt-APK-Reposi
 
 # 2. 赋予正确的读取权限
 chmod 644 /etc/apk/keys/private-key.pem.pub
+
+# 首次更新使用apk add --upgrade --force-overwrite luci-app-passwall luci-i18n-passwall-zh-cn，以后正常更新或使用系统里的软件包更新
