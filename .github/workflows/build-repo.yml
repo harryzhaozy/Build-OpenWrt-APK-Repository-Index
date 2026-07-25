@@ -1,16 +1,21 @@
-name: Build Signed OpenWrt APK Repository Index
+name: Build, Sign and Publish OpenWrt APK Repo
 
 on:
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch: # 手动触发
   schedule:
-    - cron: '0 0 * * *' # 每天定时自动检查更新
+    - cron: '0 0 * * *' # 每天定时运行检查更新
+
+permissions:
+  contents: write # 允许 Action 写回仓库内容和发布 Releases
 
 jobs:
-  build-index:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
@@ -26,14 +31,14 @@ jobs:
             exit 1
           fi
           
-          # 从 Secret 中读取私钥，并写入临时私钥文件
+          # 将 Secret 中的私钥写入临时文件
           echo "$PRIVATE_KEY_DATA" > private-key.pem
           chmod 600 private-key.pem
 
       - name: Download latest Passwall APKs
         run: |
-          mkdir -p repo
-          cd repo
+          mkdir -p downloaded_apks
+          cd downloaded_apks
           
           # 获取 Openwrt-Passwall 最新 Release 中的所有 .apk 文件下载地址
           APK_URLS=$(curl -s https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest \
@@ -49,27 +54,45 @@ jobs:
             curl -sL -O "$url"
           done
 
-      - name: Generate Signed packages.adb index
+      - name: Generate Signed packages.adb Index
         run: |
-          # 复制公钥到发布目录
-          cp apk.pub repo/apk.pub
-          
-          cd repo
-          
-          # 使用 private-key.pem 对生成的 packages.adb 进行私钥数字签名
-          apk mkndx --sign ../private-key.pem --output packages.adb *.apk
+          cd downloaded_apks
+          # 使用根目录中的 private-key.pem 签名生成 packages.adb 到仓库根目录
+          apk mkndx --sign ../private-key.pem --output ../packages.adb *.apk
 
       - name: Clean up sensitive key
         if: always()
         run: |
-          # 安全擦除构建环境中的私钥文件，防止泄露
+          # 擦除敏感私钥
           rm -f private-key.pem
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: passwall-apk-repo
-          path: |
-            repo/*.apk
-            repo/packages.adb
-            repo/apk.pub
+      - name: Commit and Push packages.adb to repository root
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add packages.adb
+          
+          # 检查 packages.adb 是否有更新，如果有更新则 Commit 并 Push
+          if git diff --staged --quiet; then
+            echo "packages.adb 没有变化，跳过 commit"
+          else
+            git commit -m "chore: update packages.adb [skip ci]"
+            git push
+          fi
+
+      - name: Publish/Overwrite APKs to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="latest"
+          
+          # 如果不存在 latest 标签的 Release，则自动新建；如果已存在则继续处理
+          if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "创建新的 Release: $TAG_NAME"
+            gh release create "$TAG_NAME" --title "Latest Passwall APKs" --notes "自动更新的 Passwall APK 文件及软件包索引"
+          fi
+
+          # 使用 --clobber 参数强制覆盖已有同名文件
+          echo "正在上传/覆盖 APK 文件到 Release ($TAG_NAME)..."
+          gh release upload "$TAG_NAME" downloaded_apks/*.apk --clobber
