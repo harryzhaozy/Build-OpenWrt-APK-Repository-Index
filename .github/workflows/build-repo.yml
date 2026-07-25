@@ -51,7 +51,7 @@ jobs:
             curl -sL -O "$url"
           done
 
-      - name: Generate Signed APKINDEX and packages.adb via Alpine Container
+      - name: Generate Signed packages.adb Index via Alpine Container
         run: |
           docker run --rm \
             -v "$(pwd):/work" \
@@ -59,18 +59,26 @@ jobs:
             alpine:latest sh -c "
               apk add --no-cache apk-tools && \
               cd downloaded_apks && \
-              # 1. 生成标准的 APKINDEX.tar.gz
-              apk mkndx --allow-untrusted --sign ../private-key.pem --output APKINDEX.tar.gz *.apk && \
-              # 2. 同时复制一份 packages.adb 以防万一
-              cp APKINDEX.tar.gz packages.adb
+              # 1. 生成标准的 packages.adb
+              apk mkndx --allow-untrusted --sign ../private-key.pem --output ../packages.adb *.apk
             "
-          # 复制到根目录用于推送回 Git 仓库
-          cp downloaded_apks/packages.adb ./packages.adb
 
       - name: Clean up sensitive key
         if: always()
         run: |
           rm -f private-key.pem
+
+      - name: Prepare Release Assets with Architecture Subfolder
+        run: |
+          # 创建 x86_64 架构目录结构，符合 OpenWrt apk 规范
+          mkdir -p upload_assets/x86_64
+          # 将所有 apk 和 packages.adb 复制进架构目录
+          cp downloaded_apks/*.apk upload_assets/x86_64/
+          cp packages.adb upload_assets/x86_64/
+          # 同时也保留根目录一份
+          cp downloaded_apks/*.apk upload_assets/
+          cp packages.adb upload_assets/
+          
 
       - name: Commit and Push packages.adb to repository root
         run: |
@@ -96,5 +104,5 @@ jobs:
             gh release create "$TAG_NAME" --title "Latest Passwall APKs" --notes "自动更新的 Passwall APK 文件及软件包索引"
           fi
 
-          # 上传所有 apk 文件以及生成的 APKINDEX.tar.gz 和 packages.adb
-          gh release upload "$TAG_NAME" downloaded_apks/* --clobber
+          # 上传 upload_assets 目录下的所有文件到 Release
+          gh release upload "$TAG_NAME" upload_assets/* --clobber
