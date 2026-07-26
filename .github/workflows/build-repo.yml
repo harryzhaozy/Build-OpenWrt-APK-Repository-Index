@@ -24,7 +24,37 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl jq
 
+      - name: Fetch Remote Release Info & Check for Updates
+        id: check_version
+        run: |
+          # 1. 获取上游 Openwrt-Passwall 最新 Release 的 Tag 名称 (如 26.7.24)
+          UPSTREAM_JSON=$(curl -s https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest)
+          UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty')
+
+          if [ -z "$UPSTREAM_TAG" ]; then
+            echo "错误：未能获取到上游 Release 信息！"
+            exit 1
+          fi
+
+          echo "上游最新版本 Tag: $UPSTREAM_TAG"
+
+          # 2. 从我们已发布的 GitHub Pages 读取上一次记录的版本文件（version.txt）
+          PAGES_VERSION=$(curl -sL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/version.txt" || true)
+
+          echo "当前已发布版本: $PAGES_VERSION"
+
+          # 3. 比对版本号
+          if [ "$UPSTREAM_TAG" = "$PAGES_VERSION" ]; then
+            echo "::notice::上游 Passwall 尚未更新 (当前已是最新版 $UPSTREAM_TAG)，终止本次构建。"
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          else
+            echo "发现上游新版本：$PAGES_VERSION -> $UPSTREAM_TAG"
+            echo "has_update=true" >> $GITHUB_OUTPUT
+            echo "upstream_tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+          fi
+
       - name: Prepare Signing Keys
+        if: steps.check_version.outputs.has_update == 'true'
         env:
           PRIVATE_KEY_DATA: ${{ secrets.APK_PRIVATE_KEY }}
         run: |
@@ -36,11 +66,12 @@ jobs:
           chmod 600 private-key.pem
 
       - name: Download latest Passwall APKs and Sanitize Filenames
+        if: steps.check_version.outputs.has_update == 'true'
         run: |
           mkdir -p downloaded_apks
           cd downloaded_apks
           
-          # 1. 获取最新 release 中的 apk 下载链接
+          # 提取所有 apk 的下载链接
           APK_URLS=$(curl -s https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest \
             | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url')
           
@@ -49,16 +80,14 @@ jobs:
             exit 1
           fi
 
-          # 2. 下载所有 apk
           for url in $APK_URLS; do
             echo "Downloading $url..."
             curl -sL -O "$url"
           done
 
-          # 3. 关键修正：清理文件名中的前缀和异常字符 (例如把 25.12+_luci-... 重命名为 luci-...)
+          # 清理文件名中的乱码/前缀 (例如 25.12+_luci-... -> luci-...)
           for file in *luci-*.apk; do
             if [ -f "$file" ]; then
-              # 提取从 "luci-" 开始的标准包名
               clean_name=$(echo "$file" | sed -E 's/.*(luci-.*\.apk)$/\1/')
               if [ "$file" != "$clean_name" ]; then
                 echo "Renaming '$file' -> '$clean_name'"
@@ -66,7 +95,12 @@ jobs:
               fi
             fi
           done
+
+          # 写入最新版本号标记文件，用于下次比对
+          echo "${{ steps.check_version.outputs.upstream_tag }}" > version.txt
+
       - name: Generate Signed packages.adb
+        if: steps.check_version.outputs.has_update == 'true'
         run: |
           docker run --rm \
             -v "$(pwd):/work" \
@@ -81,11 +115,12 @@ jobs:
             "
 
       - name: Clean up sensitive key
-        if: always()
+        if: always() && steps.check_version.outputs.has_update == 'true'
         run: |
           rm -f private-key.pem
 
       - name: Deploy to GitHub Pages
+        if: steps.check_version.outputs.has_update == 'true'
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
