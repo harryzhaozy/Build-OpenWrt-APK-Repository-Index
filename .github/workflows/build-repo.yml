@@ -1,4 +1,4 @@
-name: Old Build, Sign and Publish OpenWrt APK Repo
+name:  Build, Sign and Publish OpenWrt APK Repo
 
 on:
   workflow_dispatch:
