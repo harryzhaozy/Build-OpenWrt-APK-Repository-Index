@@ -1,0 +1,132 @@
+name: Build, Sign and Publish OpenWrt APK Repo
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */3 * * *'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 优先检查上游版本，无需依赖 Checkout 或安装系统包，几秒内即可完成判定
+      - name: Check Upstream Passwall Release Version
+        id: check_version
+        run: |
+          # 获取上游最新 Tag
+          UPSTREAM_JSON=$(curl -s https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest)
+          UPSTREAM_TAG=$(echo "$UPSTREAM_JSON" | jq -r '.tag_name // empty' 2>/dev/null || true)
+
+          if [ -z "$UPSTREAM_TAG" ]; then
+            echo "错误：未能获取到上游 Release 信息，跳过本次构建！"
+            echo "has_update=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "上游最新版本 Tag: $UPSTREAM_TAG"
+
+          # 获取我们已发布的 Pages 中的版本记录
+          PAGES_VERSION=$(curl -sL "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/version.txt" || true)
+
+          echo "当前 Pages 已发布版本: $PAGES_VERSION"
+
+          # 比对版本号
+          if [ "$UPSTREAM_TAG" = "$PAGES_VERSION" ]; then
+            echo "::notice::上游 Passwall 尚未更新 (当前已是最新版 $UPSTREAM_TAG)，终止后续步骤。"
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          else
+            echo "发现上游新版本：$PAGES_VERSION -> $UPSTREAM_TAG"
+            echo "has_update=true" >> $GITHUB_OUTPUT
+            echo "upstream_tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+          fi
+
+      # 2. 只有在确认有新版本时，才拉取仓库代码
+      - name: Checkout repository
+        if: steps.check_version.outputs.has_update == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 3. 准备签名私钥
+      - name: Prepare Signing Keys
+        if: steps.check_version.outputs.has_update == 'true'
+        env:
+          PRIVATE_KEY_DATA: ${{ secrets.APK_PRIVATE_KEY }}
+        run: |
+          if [ -z "$PRIVATE_KEY_DATA" ]; then
+            echo "Error: APK_PRIVATE_KEY is not set in Repository Secrets!"
+            exit 1
+          fi
+          echo "$PRIVATE_KEY_DATA" > private-key.pem
+          chmod 600 private-key.pem
+
+      # 4. 下载 APK 并清理/规范化文件名
+      - name: Download Passwall APKs and Sanitize Filenames
+        if: steps.check_version.outputs.has_update == 'true'
+        run: |
+          mkdir -p downloaded_apks
+          cd downloaded_apks
+          
+          APK_URLS=$(curl -s https://api.github.com/repos/Openwrt-Passwall/openwrt-passwall/releases/latest \
+            | jq -r '.assets[] | select(.name | endswith(".apk")) | .browser_download_url')
+          
+          if [ -z "$APK_URLS" ]; then
+            echo "未找到 APK 文件"
+            exit 1
+          fi
+
+          for url in $APK_URLS; do
+            echo "Downloading $url..."
+            curl -sL -O "$url"
+          done
+
+          # 清理文件名中的异常前缀 (例如 25.12+_luci-... -> luci-...)
+          for file in *luci-*.apk; do
+            if [ -f "$file" ]; then
+              clean_name=$(echo "$file" | sed -E 's/.*(luci-.*\.apk)$/\1/')
+              if [ "$file" != "$clean_name" ]; then
+                echo "Renaming '$file' -> '$clean_name'"
+                mv "$file" "$clean_name"
+              fi
+            fi
+          done
+
+          # 写入最新的版本标记文件
+          echo "${{ steps.check_version.outputs.upstream_tag }}" > version.txt
+
+      # 5. 生成签名索引包 packages.adb
+      - name: Generate Signed packages.adb
+        if: steps.check_version.outputs.has_update == 'true'
+        run: |
+          docker run --rm \
+            -v "$(pwd):/work" \
+            -w /work \
+            alpine:latest sh -c "
+              apk add --no-cache apk-tools && \
+              cd downloaded_apks && \
+              apk mkndx --allow-untrusted \
+                --sign ../private-key.pem \
+                --output packages.adb \
+                *.apk
+            "
+
+      # 6. 安全清理私钥文件
+      - name: Clean up sensitive key
+        if: always() && steps.check_version.outputs.has_update == 'true'
+        run: |
+          rm -f private-key.pem
+
+      # 7. 部署更新到 GitHub Pages
+      - name: Deploy to GitHub Pages
+        if: steps.check_version.outputs.has_update == 'true'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./downloaded_apks
+          keep_files: false
+          force_orphan: true
