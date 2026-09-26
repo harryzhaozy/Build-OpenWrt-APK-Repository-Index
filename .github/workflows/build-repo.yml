@@ -132,7 +132,6 @@ jobs:
           keep_files: false
           force_orphan: true
 
-
   # 8. 清理旧的 Workflow Runs，只保留最新一次
   cleanup:
     if: always()
@@ -143,17 +142,31 @@ jobs:
       actions: write
 
     steps:
-      - name: Delete old workflow runs
+      - name: Delete old Workflow Runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WORKFLOW_FILE: build-openwrt-apk.yml
+          CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
-          echo "开始清理旧的 Workflow Runs..."
+          echo "当前 Run ID: $CURRENT_RUN_ID"
+          echo "开始获取旧的 Workflow Runs..."
 
-          gh run list \
-            --workflow="${{ github.workflow }}" \
-            --limit 100 \
-            --json databaseId,createdAt \
-            --jq 'sort_by(.createdAt) | reverse | .[1:] | .[].databaseId' |
-          xargs -r -n1 gh run delete
+          gh api \
+            --paginate \
+            "/repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?per_page=100" \
+            --jq '.workflow_runs[] | "\(.id) \(.created_at)"' |
+          sort -rk2 |
+          tail -n +2 |
+          awk '{print $1}' |
+          while read RUN_ID; do
+            if [ -n "$RUN_ID" ]; then
+              echo "删除 Run: $RUN_ID"
 
-          echo "旧的 Workflow Runs 清理完成。"
+              #gh api \
+              #  --method DELETE \
+              #  "/repos/$REPO/actions/runs/$RUN_ID"
+            fi
+          done
+
+          echo "清理完成。"
