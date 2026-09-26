@@ -9,6 +9,7 @@ permissions:
   contents: write
   pages: write
   id-token: write
+  actions: write
 
 jobs:
   build-and-publish:
@@ -146,27 +147,43 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          WORKFLOW_FILE: build-openwrt-apk.yml
+          WORKFLOW_NAME: ${{ github.workflow }}
           CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
+          echo "当前 Workflow: $WORKFLOW_NAME"
           echo "当前 Run ID: $CURRENT_RUN_ID"
+
+          echo "查找 Workflow ID..."
+
+          WORKFLOW_ID=$(gh api \
+            "/repos/$REPO/actions/workflows" \
+            --paginate \
+            --jq ".workflows[] | select(.name == \"$WORKFLOW_NAME\") | .id" \
+            | head -n 1)
+
+          if [ -z "$WORKFLOW_ID" ]; then
+            echo "错误：找不到 Workflow ID"
+            exit 1
+          fi
+
+          echo "找到 Workflow ID: $WORKFLOW_ID"
           echo "开始获取旧的 Workflow Runs..."
 
           gh api \
             --paginate \
-            "/repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?per_page=100" \
+            "/repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?per_page=100" \
             --jq '.workflow_runs[] | "\(.id) \(.created_at)"' |
           sort -rk2 |
           tail -n +2 |
           awk '{print $1}' |
           while read RUN_ID; do
             if [ -n "$RUN_ID" ]; then
-              echo "删除 Run: $RUN_ID"
+              echo "删除旧 Run: $RUN_ID"
 
-              #gh api \
-              #  --method DELETE \
-              #  "/repos/$REPO/actions/runs/$RUN_ID"
+              gh api \
+                --method DELETE \
+                "/repos/$REPO/actions/runs/$RUN_ID"
             fi
           done
 
-          echo "清理完成。"
+          echo "旧的 Workflow Runs 清理完成。"
